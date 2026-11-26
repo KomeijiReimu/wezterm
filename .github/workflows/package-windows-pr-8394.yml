@@ -1,0 +1,111 @@
+name: Package WezTerm PR 8394 for Windows x64
+
+on:
+  push:
+    branches:
+      - build/windows-pr-8394
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    if: github.repository == 'KomeijiReimu/wezterm'
+    runs-on: "windows-2025"
+
+    env:
+      CARGO_INCREMENTAL: "0"
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: "sccache"
+      RUSTUP_WINDOWS_PATH_ADD_BIN: "1"
+
+    steps:
+      - name: "Check out exact PR source"
+        uses: actions/checkout@v5
+        with:
+          ref: 24675c2f0a049fa4820a59e793968df9cad3bf4b
+          submodules: "recursive"
+          persist-credentials: false
+      - name: "Verify source commit"
+        shell: bash
+        run: |
+          expected=24675c2f0a049fa4820a59e793968df9cad3bf4b
+          actual=$(git rev-parse HEAD)
+          if [[ "$actual" != "$expected" ]]; then
+            printf 'Expected HEAD %s, found %s\n' "$expected" "$actual" >&2
+            exit 1
+          fi
+          printf 'Verified HEAD %s\n' "$actual"
+      - name: "Install Rust"
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          target: "x86_64-pc-windows-msvc"
+      # sccache 0.17+ expands rustc argfiles beyond the Windows command-line limit.
+      # https://github.com/mozilla/sccache/issues/2787
+      - name: "Compile with sccache"
+        uses: mozilla-actions/sccache-action@v0.0.9
+        with:
+          version: "v0.16.0"
+      - name: "Cache Rust Dependencies"
+        uses: actions/cache@v4
+        id: cache-cargo-vendor
+        with:
+          path: |
+            vendor
+            .cargo/config
+          key: "cargo-deps-${{ hashFiles('**/Cargo.lock') }}"
+      - name: "Vendor dependencies"
+        if: steps.cache-cargo-vendor.outputs.cache-hit != 'true'
+        shell: bash
+        run: "cargo vendor --locked --versioned-dirs >> .cargo/config"
+      - name: "Build wezterm (Release mode)"
+        shell: cmd
+        run: |
+          PATH C:\Strawberry\perl\bin;%PATH%
+          cargo build -p wezterm --release
+      - name: "Build wezterm-gui (Release mode)"
+        shell: cmd
+        run: |
+          PATH C:\Strawberry\perl\bin;%PATH%
+          cargo build -p wezterm-gui --release
+      - name: "Build wezterm-mux-server (Release mode)"
+        shell: cmd
+        run: |
+          PATH C:\Strawberry\perl\bin;%PATH%
+          cargo build -p wezterm-mux-server --release
+      - name: "Build strip-ansi-escapes (Release mode)"
+        shell: cmd
+        run: |
+          PATH C:\Strawberry\perl\bin;%PATH%
+          cargo build -p strip-ansi-escapes --release
+      - name: "Package"
+        shell: bash
+        run: "bash ci/deploy.sh"
+      - name: "Verify packages and compute SHA-256 checksums"
+        shell: bash
+        run: |
+          shopt -s nullglob
+          installers=(WezTerm-*-setup.exe)
+          portable_zips=(WezTerm-windows-*.zip)
+          if (( ${#installers[@]} != 1 || ${#portable_zips[@]} != 1 )); then
+            printf 'Expected one installer and one portable ZIP; found %s installer(s) and %s ZIP(s)\n' \
+              "${#installers[@]}" "${#portable_zips[@]}" >&2
+            exit 1
+          fi
+          for package in "${installers[0]}" "${portable_zips[0]}"; do
+            if [[ ! -f "$package" || ! -s "$package" ]]; then
+              printf 'Missing or empty package: %s\n' "$package" >&2
+              exit 1
+            fi
+          done
+          sha256sum -- "${installers[0]}" "${portable_zips[0]}" > SHA256SUMS.txt
+      - name: "Upload Windows packages"
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-pr-8394
+          path: |
+            WezTerm-*-setup.exe
+            WezTerm-windows-*.zip
+            SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 14
